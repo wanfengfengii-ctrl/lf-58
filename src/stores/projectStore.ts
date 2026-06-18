@@ -131,27 +131,43 @@ export const useProjectStore = defineStore('project', () => {
 
   function markAsComplete(): ValidationResult {
     const bladePathStore = useBladePathStore()
+    const layerStore = useLayerStore()
 
-    if (bladePathStore.hasUnreviewed) {
-      return {
-        valid: false,
-        errors: [`存在 ${bladePathStore.unreviewedCount} 条未复核刀路，请先完成所有复核。`]
-      }
+    const errors: string[] = []
+    const hiddenUnreviewed = bladePathStore.allBladePaths.filter(
+      (p) => !p.isReviewed && !layerStore.visibleLayerIds.includes(p.layerId)
+    ).length
+
+    if (bladePathStore.visibleHasUnreviewed) {
+      errors.push(
+        `可见图层中存在 ${bladePathStore.visibleUnreviewedCount} 条未复核刀路，请先完成所有复核。`
+      )
     }
 
-    if (bladePathStore.hasDuplicateNumbers) {
-      const duplicates = bladePathStore.getDuplicateNumbers()
-      return {
-        valid: false,
-        errors: [`存在重复的刀路编号：${duplicates.join(', ')}，请修正后再标记完成。`]
-      }
+    if (bladePathStore.visibleHasDuplicateNumbers) {
+      const duplicates = bladePathStore.getVisibleDuplicateNumbers()
+      errors.push(`可见图层中存在重复的刀路编号：${duplicates.join(', ')}，请修正后再标记完成。`)
+    }
+
+    if (bladePathStore.visiblePathCount === 0) {
+      errors.push('没有可见的刀路图层，无法标记完成。')
+    }
+
+    if (errors.length > 0) {
+      return { valid: false, errors }
     }
 
     if (currentScheme.value) {
       currentScheme.value.isCompleted = true
     }
 
-    return { valid: true, errors: [] }
+    return {
+      valid: true,
+      errors: [],
+      warnings: hiddenUnreviewed > 0
+        ? [`注意：隐藏图层中有 ${hiddenUnreviewed} 条未复核刀路，发布统计时将自动忽略。`]
+        : []
+    } as ValidationResult
   }
 
   function unmarkComplete(): void {

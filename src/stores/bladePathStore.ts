@@ -21,8 +21,16 @@ export const useBladePathStore = defineStore('bladePath', () => {
     return bladePaths.value.filter((p) => !p.isReviewed).length
   })
 
+  const visibleUnreviewedCount = computed(() => {
+    return visibleBladePaths.value.filter((p) => !p.isReviewed).length
+  })
+
   const hasUnreviewed = computed(() => {
     return hasUnreviewedPaths(bladePaths.value)
+  })
+
+  const visibleHasUnreviewed = computed(() => {
+    return visibleUnreviewedCount.value > 0
   })
 
   const totalLength = computed(() => {
@@ -32,8 +40,16 @@ export const useBladePathStore = defineStore('bladePath', () => {
 
   const totalPathCount = computed(() => bladePaths.value.length)
 
+  const visiblePathCount = computed(() => visibleBladePaths.value.length)
+
   const hasDuplicateNumbers = computed(() => {
     const numbers = bladePaths.value.map((p) => p.pathNumber)
+    const unique = new Set(numbers)
+    return numbers.length !== unique.size
+  })
+
+  const visibleHasDuplicateNumbers = computed(() => {
+    const numbers = visibleBladePaths.value.map((p) => p.pathNumber)
     const unique = new Set(numbers)
     return numbers.length !== unique.size
   })
@@ -246,16 +262,32 @@ export const useBladePathStore = defineStore('bladePath', () => {
     return duplicates
   }
 
+  function getVisibleDuplicateNumbers(): string[] {
+    const countMap = new Map<string, number>()
+    visibleBladePaths.value.forEach((p) => {
+      countMap.set(p.pathNumber, (countMap.get(p.pathNumber) || 0) + 1)
+    })
+    const duplicates: string[] = []
+    countMap.forEach((count, num) => {
+      if (count > 1) duplicates.push(num)
+    })
+    return duplicates
+  }
+
   return {
     bladePaths,
     activeLayerId,
     allBladePaths,
     visibleBladePaths,
     unreviewedCount,
+    visibleUnreviewedCount,
     hasUnreviewed,
+    visibleHasUnreviewed,
     totalLength,
     totalPathCount,
+    visiblePathCount,
     hasDuplicateNumbers,
+    visibleHasDuplicateNumbers,
     setActiveLayerId,
     createBladePath,
     addBladePath,
@@ -269,6 +301,7 @@ export const useBladePathStore = defineStore('bladePath', () => {
     setBladePaths,
     clearBladePaths,
     getNextPathNumber,
-    getDuplicateNumbers
+    getDuplicateNumbers,
+    getVisibleDuplicateNumbers
   }
 })

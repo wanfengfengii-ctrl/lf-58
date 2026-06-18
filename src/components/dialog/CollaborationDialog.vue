@@ -212,14 +212,27 @@ function updateReviewer() {
 }
 
 function publishScheme() {
-  if (!canPublish.value) {
-    message.error('存在未解决的问题，无法发布')
+  const preCheck = projectStore.markAsComplete
+    ? (() => {
+        const result = projectStore.markAsComplete()
+        if (!result.valid) return result
+        projectStore.unmarkComplete()
+        return result
+      })()
+    : null
+
+  if (preCheck && !preCheck.valid) {
+    preCheck.errors.forEach((err) => message.error(err))
     return
   }
 
+  const hasWarnings = preCheck?.warnings && preCheck.warnings.length > 0
+
   dialog.warning({
     title: '确认发布',
-    content: `确定要发布当前方案吗？发布后将生成最终版本。`,
+    content: hasWarnings
+      ? `确定要发布当前方案吗？\n\n${preCheck!.warnings!.join('\n')}\n\n发布后将生成最终版本。`
+      : `确定要发布当前方案吗？发布后将生成最终版本。`,
     positiveText: '发布',
     negativeText: '取消',
     positiveButtonProps: { type: 'primary' },
@@ -232,6 +245,9 @@ function publishScheme() {
           ['发布', '正式版']
         )
         message.success('方案已成功发布！')
+        if (result.warnings && result.warnings.length > 0) {
+          result.warnings.forEach((w) => message.warning(w))
+        }
         emit('update:visible', false)
       } else {
         result.errors.forEach((err) => message.error(err))
