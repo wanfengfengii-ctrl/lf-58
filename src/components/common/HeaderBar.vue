@@ -8,6 +8,7 @@ import CompareDialog from '../dialog/CompareDialog.vue'
 import DiffAnalysisDialog from '../dialog/DiffAnalysisDialog.vue'
 import CollaborationDialog from '../dialog/CollaborationDialog.vue'
 import StyleAnalysisDialog from '../dialog/StyleAnalysisDialog.vue'
+import CarvingExperimentDialog from '../dialog/CarvingExperimentDialog.vue'
 
 const projectStore = useProjectStore()
 const collaborationStore = useCollaborationStore()
@@ -23,6 +24,7 @@ const showCompareDialog = ref(false)
 const showDiffDialog = ref(false)
 const showCollaborationDialog = ref(false)
 const showStyleAnalysisDialog = ref(false)
+const showCarvingExperimentDialog = ref(false)
 
 const openCommentsCount = computed(() => collaborationStore.openComments.length)
 
@@ -123,6 +125,10 @@ function openCollaborationDialog() {
 
 function openStyleAnalysisDialog() {
   showStyleAnalysisDialog.value = true
+}
+
+function openCarvingExperimentDialog() {
+  showCarvingExperimentDialog.value = true
 }
 </script>
 
@@ -249,6 +255,18 @@ function openStyleAnalysisDialog() {
         风格识别
       </button>
 
+      <button
+        @click="openCarvingExperimentDialog"
+        :disabled="!hasImage"
+        class="px-4 py-2 bg-[#8B4513] text-white rounded-lg hover:bg-[#733810] transition-colors text-sm font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        版刻模拟
+      </button>
+
       <div class="w-px h-6 bg-[#D4C4A8] mx-1" />
 
       <button
@@ -286,4 +304,5 @@ function openStyleAnalysisDialog() {
   <DiffAnalysisDialog v-model:visible="showDiffDialog" />
   <CollaborationDialog v-model:visible="showCollaborationDialog" />
   <StyleAnalysisDialog v-model:visible="showStyleAnalysisDialog" />
+  <CarvingExperimentDialog v-model:visible="showCarvingExperimentDialog" />
 </template>
