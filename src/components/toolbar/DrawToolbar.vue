@@ -3,18 +3,27 @@ import { computed } from 'vue'
 import { useCanvasStore } from '../../stores/canvasStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useBladePathStore } from '../../stores/bladePathStore'
+import { useLayerStore } from '../../stores/layerStore'
 import ToolButton from './ToolButton.vue'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 
 const canvasStore = useCanvasStore()
 const projectStore = useProjectStore()
 const bladePathStore = useBladePathStore()
+const layerStore = useLayerStore()
 const message = useMessage()
+const dialog = useDialog()
 
 const hasImage = computed(() => projectStore.hasImage)
 const selectedPath = computed(() =>
   canvasStore.selectedPathId ? bladePathStore.getBladePathById(canvasStore.selectedPathId) : null
 )
+
+const isSelectedPathLocked = computed(() => {
+  if (!selectedPath.value) return false
+  const layer = layerStore.getLayerById(selectedPath.value.layerId)
+  return layer?.locked ?? false
+})
 
 function setDrawMode(mode: 'free' | 'polyline' | 'none') {
   if (!hasImage.value) {
@@ -33,6 +42,10 @@ function setMarkerMode(mode: 'start' | 'end' | 'revision' | 'none') {
     message.warning('请先选择一条刀路')
     return
   }
+  if (isSelectedPathLocked.value) {
+    message.warning('所属图层已锁定，无法添加标注')
+    return
+  }
   canvasStore.setMarkerMode(canvasStore.markerMode === mode ? 'none' : mode)
 }
 
@@ -42,9 +55,24 @@ function deleteSelectedPath() {
     return
   }
   const path = bladePathStore.getBladePathById(canvasStore.selectedPathId)
-  bladePathStore.deleteBladePath(canvasStore.selectedPathId)
-  canvasStore.selectPath(null)
-  message.success(`已删除刀路 ${path?.pathNumber}`)
+  if (!path) return
+
+  dialog.warning({
+    title: '确认删除',
+    content: `确定要删除刀路「${path.pathNumber}」吗？此操作不可撤销。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: () => {
+      const result = bladePathStore.deleteBladePath(canvasStore.selectedPathId!)
+      if (!result.valid) {
+        result.errors.forEach((err) => message.error(err))
+        return
+      }
+      canvasStore.selectPath(null)
+      message.success(`已删除刀路 ${path.pathNumber}`)
+    }
+  })
 }
 
 function toggleSelectedReview() {
@@ -52,7 +80,11 @@ function toggleSelectedReview() {
     message.warning('请先选择一条刀路')
     return
   }
-  bladePathStore.toggleReview(canvasStore.selectedPathId)
+  const result = bladePathStore.toggleReview(canvasStore.selectedPathId)
+  if (!result.valid) {
+    result.errors.forEach((err) => message.error(err))
+    return
+  }
   const path = bladePathStore.getBladePathById(canvasStore.selectedPathId)
   message.success(
     path?.isReviewed ? '已标记为已复核' : '已取消复核标记'
@@ -92,7 +124,7 @@ function toggleSelectedReview() {
 
     <ToolButton
       :active="canvasStore.markerMode === 'start'"
-      :disabled="!hasImage || !selectedPath"
+      :disabled="!hasImage || !selectedPath || isSelectedPathLocked"
       title="标注起刀点"
       @click="setMarkerMode('start')"
     >
@@ -103,7 +135,7 @@ function toggleSelectedReview() {
 
     <ToolButton
       :active="canvasStore.markerMode === 'end'"
-      :disabled="!hasImage || !selectedPath"
+      :disabled="!hasImage || !selectedPath || isSelectedPathLocked"
       title="标注收刀点"
       @click="setMarkerMode('end')"
     >
@@ -114,7 +146,7 @@ function toggleSelectedReview() {
 
     <ToolButton
       :active="canvasStore.markerMode === 'revision'"
-      :disabled="!hasImage || !selectedPath"
+      :disabled="!hasImage || !selectedPath || isSelectedPathLocked"
       title="标注修版位置"
       @click="setMarkerMode('revision')"
     >
@@ -128,7 +160,7 @@ function toggleSelectedReview() {
     <div class="text-xs font-medium text-[#8B7355] mb-1 px-1">编辑操作</div>
 
     <ToolButton
-      :disabled="!hasImage || !selectedPath"
+      :disabled="!hasImage || !selectedPath || isSelectedPathLocked"
       title="切换复核状态"
       @click="toggleSelectedReview"
     >
@@ -138,7 +170,7 @@ function toggleSelectedReview() {
     </ToolButton>
 
     <ToolButton
-      :disabled="!hasImage || !selectedPath"
+      :disabled="!hasImage || !selectedPath || isSelectedPathLocked"
       title="删除选中刀路 (Delete)"
       @click="deleteSelectedPath"
     >

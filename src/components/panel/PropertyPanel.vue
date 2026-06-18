@@ -19,6 +19,12 @@ const selectedPath = computed(() =>
   canvasStore.selectedPathId ? bladePathStore.getBladePathById(canvasStore.selectedPathId) : null
 )
 
+const isSelectedPathLocked = computed(() => {
+  if (!selectedPath.value) return false
+  const layer = layerStore.getLayerById(selectedPath.value.layerId)
+  return layer?.locked ?? false
+})
+
 const layerOptions = computed(() =>
   layerStore.layers.map((l) => ({ label: l.name, value: l.id, color: l.color }))
 )
@@ -78,7 +84,11 @@ function changeLayer(layerId: string) {
 
 function toggleReview() {
   if (!selectedPath.value) return
-  bladePathStore.toggleReview(selectedPath.value.id)
+  const result = bladePathStore.toggleReview(selectedPath.value.id)
+  if (!result.valid) {
+    result.errors.forEach((err) => message.error(err))
+    return
+  }
   message.success(
     selectedPath.value.isReviewed ? '已标记为已复核' : '已取消复核标记'
   )
@@ -97,11 +107,19 @@ function toggleReview() {
     </div>
 
     <div v-if="selectedPath" class="flex-1 overflow-y-auto p-4 space-y-4">
+      <div v-if="isSelectedPathLocked" class="p-3 bg-[#E8A838]/10 border border-[#E8A838]/30 rounded-lg flex items-center gap-2">
+        <svg class="w-4 h-4 text-[#E8A838] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+        <span class="text-xs text-[#E8A838]">所属图层已锁定，无法编辑</span>
+      </div>
+
       <div class="space-y-2">
         <label class="text-xs font-medium text-[#8B7355]">刀路编号</label>
         <input
           v-model="localPathNumber"
-          class="w-full px-3 py-2 border border-[#D4C4A8] rounded-lg text-sm text-[#3D2B1F] focus:outline-none focus:border-[#1D4E89] focus:ring-1 focus:ring-[#1D4E89]"
+          :disabled="isSelectedPathLocked"
+          class="w-full px-3 py-2 border border-[#D4C4A8] rounded-lg text-sm text-[#3D2B1F] focus:outline-none focus:border-[#1D4E89] focus:ring-1 focus:ring-[#1D4E89] disabled:bg-[#F5F0E6] disabled:text-[#8B7355] disabled:cursor-not-allowed"
           @blur="savePathNumber"
           @keyup.enter="savePathNumber"
         />
@@ -116,8 +134,9 @@ function toggleReview() {
           />
           <select
             :value="selectedPath.layerId"
+            :disabled="isSelectedPathLocked"
             @change="changeLayer(($event.target as HTMLSelectElement).value)"
-            class="flex-1 bg-transparent text-sm text-[#3D2B1F] focus:outline-none"
+            class="flex-1 bg-transparent text-sm text-[#3D2B1F] focus:outline-none disabled:text-[#8B7355] disabled:cursor-not-allowed"
           >
             <option v-for="layer in layerOptions" :key="layer.value" :value="layer.value">
               {{ layer.label }}
@@ -133,10 +152,11 @@ function toggleReview() {
         <input
           v-model.number="localBladeWidth"
           type="range"
+          :disabled="isSelectedPathLocked"
           min="1"
           max="20"
           step="1"
-          class="w-full accent-[#1D4E89]"
+          class="w-full accent-[#1D4E89] disabled:opacity-50"
           @change="saveBladeWidth"
         />
         <div class="flex justify-between text-xs text-[#8B7355]">
@@ -164,11 +184,13 @@ function toggleReview() {
         <label class="text-xs font-medium text-[#8B7355]">复核状态</label>
         <button
           @click="toggleReview"
+          :disabled="isSelectedPathLocked"
           :class="[
             'w-full py-2.5 px-4 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
             selectedPath.isReviewed
               ? 'bg-[#2E5D3B]/10 text-[#2E5D3B] border border-[#2E5D3B]/30'
-              : 'bg-[#E8A838]/10 text-[#E8A838] border border-[#E8A838]/30'
+              : 'bg-[#E8A838]/10 text-[#E8A838] border border-[#E8A838]/30',
+            isSelectedPathLocked ? 'opacity-50 cursor-not-allowed' : ''
           ]"
         >
           <svg v-if="selectedPath.isReviewed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -210,7 +232,8 @@ function toggleReview() {
         <textarea
           v-model="localNotes"
           rows="4"
-          class="w-full px-3 py-2 border border-[#D4C4A8] rounded-lg text-sm text-[#3D2B1F] focus:outline-none focus:border-[#1D4E89] focus:ring-1 focus:ring-[#1D4E89] resize-none"
+          :disabled="isSelectedPathLocked"
+          class="w-full px-3 py-2 border border-[#D4C4A8] rounded-lg text-sm text-[#3D2B1F] focus:outline-none focus:border-[#1D4E89] focus:ring-1 focus:ring-[#1D4E89] resize-none disabled:bg-[#F5F0E6] disabled:text-[#8B7355] disabled:cursor-not-allowed"
           placeholder="输入刀路备注信息..."
           @blur="saveNotes"
         />

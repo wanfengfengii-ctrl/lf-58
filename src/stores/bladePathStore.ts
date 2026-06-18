@@ -95,10 +95,20 @@ export const useBladePathStore = defineStore('bladePath', () => {
     return { valid: true, errors: [] }
   }
 
+  function isLayerLocked(layerId: string): boolean {
+    const layerStore = useLayerStore()
+    const layer = layerStore.getLayerById(layerId)
+    return layer?.locked ?? false
+  }
+
   function updateBladePath(id: string, updates: Partial<BladePath>): ValidationResult {
     const index = bladePaths.value.findIndex((p) => p.id === id)
     if (index === -1) {
       return { valid: false, errors: ['刀路不存在'] }
+    }
+
+    if (isLayerLocked(bladePaths.value[index].layerId)) {
+      return { valid: false, errors: ['所属图层已锁定，无法修改'] }
     }
 
     const updatedPath = { ...bladePaths.value[index], ...updates }
@@ -122,24 +132,42 @@ export const useBladePathStore = defineStore('bladePath', () => {
     return { valid: true, errors: [] }
   }
 
-  function deleteBladePath(id: string) {
+  function deleteBladePath(id: string): ValidationResult {
     const index = bladePaths.value.findIndex((p) => p.id === id)
-    if (index !== -1) {
-      bladePaths.value.splice(index, 1)
+    if (index === -1) {
+      return { valid: false, errors: ['刀路不存在'] }
     }
+
+    if (isLayerLocked(bladePaths.value[index].layerId)) {
+      return { valid: false, errors: ['所属图层已锁定，无法删除'] }
+    }
+
+    bladePaths.value.splice(index, 1)
+    return { valid: true, errors: [] }
   }
 
-  function toggleReview(id: string) {
+  function toggleReview(id: string): ValidationResult {
     const path = bladePaths.value.find((p) => p.id === id)
-    if (path) {
-      path.isReviewed = !path.isReviewed
+    if (!path) {
+      return { valid: false, errors: ['刀路不存在'] }
     }
+
+    if (isLayerLocked(path.layerId)) {
+      return { valid: false, errors: ['所属图层已锁定，无法切换复核状态'] }
+    }
+
+    path.isReviewed = !path.isReviewed
+    return { valid: true, errors: [] }
   }
 
-  function addMarker(bladePathId: string, type: 'start' | 'end' | 'revision', x: number, y: number): Marker {
+  function addMarker(bladePathId: string, type: 'start' | 'end' | 'revision', x: number, y: number): { success: boolean; marker?: Marker; error?: string } {
     const path = bladePaths.value.find((p) => p.id === bladePathId)
     if (!path) {
-      throw new Error('刀路不存在')
+      return { success: false, error: '刀路不存在' }
+    }
+
+    if (isLayerLocked(path.layerId)) {
+      return { success: false, error: '所属图层已锁定，无法添加标注' }
     }
 
     const marker: Marker = {
@@ -159,25 +187,35 @@ export const useBladePathStore = defineStore('bladePath', () => {
       path.revisionMarkers.push(marker)
     }
 
-    return marker
+    return { success: true, marker }
   }
 
-  function deleteMarker(markerId: string) {
+  function deleteMarker(markerId: string): ValidationResult {
     for (const path of bladePaths.value) {
       if (path.startMarker?.id === markerId) {
+        if (isLayerLocked(path.layerId)) {
+          return { valid: false, errors: ['所属图层已锁定，无法删除标注'] }
+        }
         path.startMarker = undefined
-        return
+        return { valid: true, errors: [] }
       }
       if (path.endMarker?.id === markerId) {
+        if (isLayerLocked(path.layerId)) {
+          return { valid: false, errors: ['所属图层已锁定，无法删除标注'] }
+        }
         path.endMarker = undefined
-        return
+        return { valid: true, errors: [] }
       }
       const revIndex = path.revisionMarkers.findIndex((m) => m.id === markerId)
       if (revIndex !== -1) {
+        if (isLayerLocked(path.layerId)) {
+          return { valid: false, errors: ['所属图层已锁定，无法删除标注'] }
+        }
         path.revisionMarkers.splice(revIndex, 1)
-        return
+        return { valid: true, errors: [] }
       }
     }
+    return { valid: false, errors: ['标注不存在'] }
   }
 
   function getBladePathById(id: string): BladePath | undefined {

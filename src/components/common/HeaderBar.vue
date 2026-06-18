@@ -3,6 +3,7 @@ import { ref, computed, h } from 'vue'
 import { useProjectStore } from '../../stores/projectStore'
 import { useBusinessRules } from '../../composables/useBusinessRules'
 import { useMessage, useDialog, NInput } from 'naive-ui'
+import CompareDialog from '../dialog/CompareDialog.vue'
 
 const projectStore = useProjectStore()
 const businessRules = useBusinessRules()
@@ -218,4 +219,6 @@ function openCompareDialog() {
       </button>
     </div>
   </header>
+
+  <CompareDialog v-model:visible="showCompareDialog" />
 </template>

@@ -1,19 +1,23 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, getCurrentInstance } from 'vue'
 import { useCanvasStore } from '../stores/canvasStore'
 import { useBladePathStore } from '../stores/bladePathStore'
+import { useLayerStore } from '../stores/layerStore'
 import KonvaCanvas from '../components/canvas/KonvaCanvas.vue'
 import DrawToolbar from '../components/toolbar/DrawToolbar.vue'
 import LayerPanel from '../components/panel/LayerPanel.vue'
 import PropertyPanel from '../components/panel/PropertyPanel.vue'
 import StatsPanel from '../components/panel/StatsPanel.vue'
 import HeaderBar from '../components/common/HeaderBar.vue'
-import CompareDialog from '../components/dialog/CompareDialog.vue'
+import { useDialog, useMessage } from 'naive-ui'
 
 const canvasStore = useCanvasStore()
 const bladePathStore = useBladePathStore()
+const layerStore = useLayerStore()
+const dialog = useDialog()
+const message = useMessage()
 
-const showCompareDialog = ref(false)
+const instance = getCurrentInstance()
 
 function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
@@ -35,27 +39,44 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (canvasStore.selectedPathId && document.activeElement?.tagName !== 'INPUT') {
+    if (canvasStore.selectedPathId && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA' && document.activeElement?.tagName !== 'SELECT') {
       e.preventDefault()
       const pathId = canvasStore.selectedPathId
-      bladePathStore.deleteBladePath(pathId)
-      canvasStore.selectPath(null)
+      const path = bladePathStore.getBladePathById(pathId)
+      if (!path) return
+
+      const layer = layerStore.getLayerById(path.layerId)
+      if (layer?.locked) {
+        message.warning('所属图层已锁定，无法删除')
+        return
+      }
+
+      dialog.warning({
+        title: '确认删除',
+        content: `确定要删除刀路「${path.pathNumber}」吗？此操作不可撤销。`,
+        positiveText: '删除',
+        negativeText: '取消',
+        positiveButtonProps: { type: 'error' },
+        onPositiveClick: () => {
+          const result = bladePathStore.deleteBladePath(pathId)
+          if (!result.valid) {
+            result.errors.forEach((err) => message.error(err))
+            return
+          }
+          canvasStore.selectPath(null)
+          message.success(`已删除刀路 ${path.pathNumber}`)
+        }
+      })
     }
   }
 }
 
-function openCompareDialog() {
-  showCompareDialog.value = true
-}
-
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown)
-  window.addEventListener('openCompareDialog', openCompareDialog)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
-  window.removeEventListener('openCompareDialog', openCompareDialog)
 })
 </script>
 
@@ -96,8 +117,6 @@ onUnmounted(() => {
         <span v-else>点击刀路查看属性</span>
       </div>
     </div>
-
-    <CompareDialog v-model:visible="showCompareDialog" />
   </div>
 </template>
 

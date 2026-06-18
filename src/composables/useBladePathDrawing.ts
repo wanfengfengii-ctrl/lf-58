@@ -99,18 +99,18 @@ export function useBladePathDrawing() {
     const path = bladePathStore.getBladePathById(canvasStore.selectedPathId)
     if (!path) return
 
-    try {
-      bladePathStore.addMarker(canvasStore.selectedPathId, markerType, point.x, point.y)
-      message.success(
-        markerType === 'start'
-          ? '起刀点已标注'
-          : markerType === 'end'
-            ? '收刀点已标注'
-            : '修版位置已标注'
-      )
-    } catch (e: any) {
-      message.error(e.message || '标注失败')
+    const result = bladePathStore.addMarker(canvasStore.selectedPathId, markerType, point.x, point.y)
+    if (!result.success) {
+      message.error(result.error || '标注失败')
+      return
     }
+    message.success(
+      markerType === 'start'
+        ? '起刀点已标注'
+        : markerType === 'end'
+          ? '收刀点已标注'
+          : '修版位置已标注'
+    )
   }
 
   function handleStageClick(point: Point) {
