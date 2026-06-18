@@ -9,7 +9,10 @@ import type {
   EngraverStyleProfile,
   VersionDiffSummary,
   SameEngraverAssociation,
-  ConfidenceLevel
+  ConfidenceLevel,
+  BladePath,
+  Marker,
+  JudgmentEvidence
 } from '../../types'
 
 const props = defineProps<{
@@ -125,14 +128,39 @@ async function runFullAnalysis() {
     return
   }
 
-  try {
-    await styleAnalysisStore.analyzeAllSchemes()
-    message.success('风格分析完成')
-    if (associations.value.length > 0) {
-      message.info(`发现 ${associations.value.length} 组疑似同工异版关联`)
+  const hasExistingData =
+    styleAnalysisStore.manualRevisions.length > 0 ||
+    styleAnalysisStore.evidences.length > 0 ||
+    styleAnalysisStore.styleProfiles.length > 0
+
+  const doAnalyze = async (clearExisting: boolean) => {
+    try {
+      await styleAnalysisStore.analyzeAllSchemes(clearExisting)
+      message.success('风格分析完成')
+      if (associations.value.length > 0) {
+        message.info(`发现 ${associations.value.length} 组疑似同工异版关联`)
+      }
+    } catch (err: any) {
+      message.error(err.message || '分析失败')
     }
-  } catch (err: any) {
-    message.error(err.message || '分析失败')
+  }
+
+  if (hasExistingData) {
+    dialog.warning({
+      title: '重新分析确认',
+      content:
+        '当前已有分析结果、修订记录或判读依据。重新分析将清空这些数据，是否继续？\n\n选择「清空并重新分析」将移除所有现有修订和依据。\n选择「保留数据重新分析」将保留现有数据，仅更新分析结果。',
+      positiveText: '清空并重新分析',
+      negativeText: '保留数据重新分析',
+      onPositiveClick: () => {
+        doAnalyze(true)
+      },
+      onNegativeClick: () => {
+        doAnalyze(false)
+      }
+    })
+  } else {
+    doAnalyze(true)
   }
 }
 
@@ -382,33 +410,189 @@ function showAddEvidenceDialog(
   targetType: 'style_profile' | 'version_diff' | 'association',
   targetId: string
 ) {
-  let content = ''
+  const schemeIds = styleAnalysisStore.getSchemeIdsForTarget(targetType, targetId)
+  const allPaths: Array<{ path: BladePath; schemeName: string; schemeId: string }> = []
+  const allMarkers: Array<{ marker: Marker; pathNumber: string; schemeName: string; schemeId: string }> = []
 
-  const d = dialog.create({
+  schemeIds.forEach((sid) => {
+    const scheme = styleAnalysisStore.getAllSchemes().find((s) => s.id === sid)
+    const schemeName = scheme?.projectName || sid
+    const paths = styleAnalysisStore.getBladePathsForScheme(sid)
+    paths.forEach((p) => {
+      allPaths.push({ path: p, schemeName, schemeId: sid })
+    })
+    const markers = styleAnalysisStore.getMarkersForScheme(sid)
+    markers.forEach((m) => {
+      allMarkers.push({ ...m, schemeName, schemeId: sid })
+    })
+  })
+
+  const evidenceType = ref<'text_note' | 'path_reference' | 'marker_reference'>('text_note')
+  const textContent = ref('')
+  const selectedPathIds = ref(new Set<string>())
+  const selectedMarkerIds = ref(new Set<string>())
+  const pathFilter = ref('')
+  const markerFilter = ref('')
+
+  dialog.create({
     title: '添加判读依据',
-    content: () =>
-      h('textarea', {
-        value: content,
-        placeholder: '请输入判读依据说明...',
-        onInput: (e: Event) => {
-          content = (e.target as HTMLTextAreaElement).value
-        },
-        style: 'width: 100%; padding: 8px 12px; border: 1px solid #d4c4a8; border-radius: 6px; font-size: 14px; min-height: 100px; resize: vertical; box-sizing: border-box; outline: none;',
-        rows: 4
-      }, [content]),
+    content: () => {
+      const typeOptions: Array<{ value: string; label: string }> = [
+        { value: 'text_note', label: '文字说明' },
+        { value: 'path_reference', label: '引用刀路' },
+        { value: 'marker_reference', label: '引用标记' }
+      ]
+
+      const filteredPaths = allPaths.filter(
+        (item) => item.path.pathNumber.toLowerCase().includes(pathFilter.value.toLowerCase()) ||
+                  item.schemeName.toLowerCase().includes(pathFilter.value.toLowerCase())
+      )
+
+      const filteredMarkers = allMarkers.filter(
+        (item) => item.pathNumber.toLowerCase().includes(markerFilter.value.toLowerCase()) ||
+                  item.marker.label?.toLowerCase().includes(markerFilter.value.toLowerCase()) ||
+                  item.schemeName.toLowerCase().includes(markerFilter.value.toLowerCase())
+      )
+
+      return h('div', { style: 'display: flex; flex-direction: column; gap: 16px; max-height: 60vh; overflow: hidden;' }, [
+        h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' }, [
+          h('div', { style: 'font-size: 13px; color: #5c4a3a; font-weight: 500;' }, '依据类型'),
+          h('div', { style: 'display: flex; gap: 8px; flex-wrap: wrap;' },
+            typeOptions.map((opt) =>
+              h('button', {
+                onClick: () => { evidenceType.value = opt.value as any },
+                style: evidenceType.value === opt.value
+                  ? 'padding: 6px 14px; border-radius: 6px; font-size: 13px; background: #6B4E71; color: white; border: none; cursor: pointer;'
+                  : 'padding: 6px 14px; border-radius: 6px; font-size: 13px; background: white; color: #5c4a3a; border: 1px solid #d4c4a8; cursor: pointer;'
+              }, opt.label)
+            )
+          )
+        ]),
+
+        h('div', { style: 'display: flex; flex-direction: column; gap: 6px;' }, [
+          h('div', { style: 'font-size: 13px; color: #5c4a3a; font-weight: 500;' }, '说明文字'),
+          h('textarea', {
+            value: textContent.value,
+            placeholder: '请输入判读依据说明...',
+            onInput: (e: Event) => { textContent.value = (e.target as HTMLTextAreaElement).value },
+            style: 'width: 100%; padding: 8px 12px; border: 1px solid #d4c4a8; border-radius: 6px; font-size: 14px; min-height: 80px; resize: vertical; box-sizing: border-box; outline: none;'
+          })
+        ]),
+
+        evidenceType.value === 'path_reference'
+          ? h('div', { style: 'display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0;' }, [
+              h('div', { style: 'font-size: 13px; color: #5c4a3a; font-weight: 500;' }, `选择刀路（已选 ${selectedPathIds.value.size} 条）`),
+              h('input', {
+                value: pathFilter.value,
+                placeholder: '搜索刀路编号或方案名...',
+                onInput: (e: Event) => { pathFilter.value = (e.target as HTMLInputElement).value },
+                style: 'width: 100%; padding: 6px 10px; border: 1px solid #d4c4a8; border-radius: 6px; font-size: 13px; box-sizing: border-box; outline: none;'
+              }),
+              h('div', { style: 'flex: 1; overflow-y: auto; border: 1px solid #e8e0d0; border-radius: 6px; max-height: 250px;' },
+                filteredPaths.length === 0
+                  ? h('div', { style: 'padding: 20px; text-align: center; color: #999; font-size: 13px;' }, '暂无刀路数据')
+                  : filteredPaths.map((item) => {
+                      const id = `${item.schemeId}-${item.path.id}`
+                      const isSelected = selectedPathIds.value.has(id)
+                      return h('div', {
+                        onClick: () => {
+                          if (isSelected) {
+                            selectedPathIds.value.delete(id)
+                          } else {
+                            selectedPathIds.value.add(id)
+                          }
+                          selectedPathIds.value = new Set(selectedPathIds.value)
+                        },
+                        style: isSelected
+                          ? 'padding: 8px 12px; cursor: pointer; background: #f5f0e6; border-bottom: 1px solid #e8e0d0; display: flex; align-items: center; gap: 8px;'
+                          : 'padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #e8e0d0; display: flex; align-items: center; gap: 8px;'
+                      }, [
+                        h('input', {
+                          type: 'checkbox',
+                          checked: isSelected,
+                          style: 'margin: 0; accent-color: #6B4E71;',
+                          onClick: (e: Event) => e.stopPropagation()
+                        }),
+                        h('span', { style: 'font-weight: 500; color: #3D2B1F;' }, item.path.pathNumber),
+                        h('span', { style: 'color: #8B7355; font-size: 12px;' }, `[${item.schemeName}]`),
+                        h('span', { style: 'color: #999; font-size: 12px; margin-left: auto;' }, `长度 ${item.path.length.toFixed(1)}`)
+                      ])
+                    })
+              )
+            ])
+          : null,
+
+        evidenceType.value === 'marker_reference'
+          ? h('div', { style: 'display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0;' }, [
+              h('div', { style: 'font-size: 13px; color: #5c4a3a; font-weight: 500;' }, `选择标记（已选 ${selectedMarkerIds.value.size} 个）`),
+              h('input', {
+                value: markerFilter.value,
+                placeholder: '搜索刀路编号、标记标签或方案名...',
+                onInput: (e: Event) => { markerFilter.value = (e.target as HTMLInputElement).value },
+                style: 'width: 100%; padding: 6px 10px; border: 1px solid #d4c4a8; border-radius: 6px; font-size: 13px; box-sizing: border-box; outline: none;'
+              }),
+              h('div', { style: 'flex: 1; overflow-y: auto; border: 1px solid #e8e0d0; border-radius: 6px; max-height: 250px;' },
+                filteredMarkers.length === 0
+                  ? h('div', { style: 'padding: 20px; text-align: center; color: #999; font-size: 13px;' }, '暂无标记数据')
+                  : filteredMarkers.map((item) => {
+                      const id = `${item.schemeId}-${item.marker.id}`
+                      const isSelected = selectedMarkerIds.value.has(id)
+                      const markerTypeLabel: Record<string, string> = { start: '起刀', end: '收刀', revision: '修版' }
+                      return h('div', {
+                        onClick: () => {
+                          if (isSelected) {
+                            selectedMarkerIds.value.delete(id)
+                          } else {
+                            selectedMarkerIds.value.add(id)
+                          }
+                          selectedMarkerIds.value = new Set(selectedMarkerIds.value)
+                        },
+                        style: isSelected
+                          ? 'padding: 8px 12px; cursor: pointer; background: #f5f0e6; border-bottom: 1px solid #e8e0d0; display: flex; align-items: center; gap: 8px;'
+                          : 'padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #e8e0d0; display: flex; align-items: center; gap: 8px;'
+                      }, [
+                        h('input', {
+                          type: 'checkbox',
+                          checked: isSelected,
+                          style: 'margin: 0; accent-color: #6B4E71;',
+                          onClick: (e: Event) => e.stopPropagation()
+                        }),
+                        h('span', {
+                          style: item.marker.type === 'revision'
+                            ? 'padding: 2px 6px; background: #C41E3A; color: white; border-radius: 4px; font-size: 11px;'
+                            : 'padding: 2px 6px; background: #1D4E89; color: white; border-radius: 4px; font-size: 11px;'
+                        }, markerTypeLabel[item.marker.type] || item.marker.type),
+                        h('span', { style: 'font-weight: 500; color: #3D2B1F;' }, item.pathNumber),
+                        item.marker.label ? h('span', { style: 'color: #5c4a3a; font-size: 12px;' }, `"${item.marker.label}"`) : null,
+                        h('span', { style: 'color: #8B7355; font-size: 12px;' }, `[${item.schemeName}]`)
+                      ])
+                    })
+              )
+            ])
+          : null
+      ])
+    },
     positiveText: '添加',
     negativeText: '取消',
     onPositiveClick: () => {
-      if (!content.trim()) {
-        message.warning('请输入依据内容')
+      if (!textContent.value.trim() && selectedPathIds.value.size === 0 && selectedMarkerIds.value.size === 0) {
+        message.warning('请输入说明文字或选择引用的刀路/标记')
         return
       }
+
+      const referencedIds: string[] = []
+      if (evidenceType.value === 'path_reference') {
+        referencedIds.push(...Array.from(selectedPathIds.value))
+      } else if (evidenceType.value === 'marker_reference') {
+        referencedIds.push(...Array.from(selectedMarkerIds.value))
+      }
+
       styleAnalysisStore.addJudgmentEvidence(
         targetType,
         targetId,
-        content,
-        'text_note',
-        [],
+        textContent.value,
+        evidenceType.value,
+        referencedIds,
         projectStore.researcher
       )
       message.success('判读依据已添加')
@@ -488,6 +672,59 @@ const currentRevisions = computed(() => {
 
 function formatDateTime(timestamp: number): string {
   return new Date(timestamp).toLocaleString('zh-CN')
+}
+
+function getEvidenceTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    text_note: '文字说明',
+    path_reference: '刀路引用',
+    marker_reference: '标记引用'
+  }
+  return labels[type] || type
+}
+
+function getEvidenceTypeColor(type: string): string {
+  const colors: Record<string, string> = {
+    text_note: 'bg-gray-100 text-gray-600',
+    path_reference: 'bg-blue-100 text-blue-600',
+    marker_reference: 'bg-orange-100 text-orange-600'
+  }
+  return colors[type] || 'bg-gray-100 text-gray-600'
+}
+
+function getReferencedItemsDisplay(evidence: JudgmentEvidence): string[] {
+  if (evidence.referencedIds.length === 0) return []
+
+  const schemeIds = styleAnalysisStore.getSchemeIdsForTarget(evidence.targetType, evidence.targetId)
+  const displays: string[] = []
+
+  schemeIds.forEach((sid) => {
+    const scheme = styleAnalysisStore.getAllSchemes().find((s) => s.id === sid)
+    const schemeName = scheme?.projectName || sid
+
+    if (evidence.evidenceType === 'path_reference') {
+      const paths = styleAnalysisStore.getBladePathsForScheme(sid)
+      paths.forEach((p) => {
+        const refId = `${sid}-${p.id}`
+        if (evidence.referencedIds.includes(refId)) {
+          displays.push(`「${schemeName}」刀路 ${p.pathNumber}`)
+        }
+      })
+    } else if (evidence.evidenceType === 'marker_reference') {
+      const markers = styleAnalysisStore.getMarkersForScheme(sid)
+      const markerTypeLabel: Record<string, string> = { start: '起刀', end: '收刀', revision: '修版' }
+      markers.forEach((m) => {
+        const refId = `${sid}-${m.marker.id}`
+        if (evidence.referencedIds.includes(refId)) {
+          const typeLabel = markerTypeLabel[m.marker.type] || m.marker.type
+          const labelPart = m.marker.label ? ` "${m.marker.label}"` : ''
+          displays.push(`「${schemeName}」${typeLabel}标记·${m.pathNumber}${labelPart}`)
+        }
+      })
+    }
+  })
+
+  return displays
 }
 
 function close() {
@@ -1385,11 +1622,29 @@ function close() {
                     :key="ev.id"
                     class="p-3 bg-[#F5F0E6]/50 rounded-lg border border-[#D4C4A8]/50"
                   >
-                    <div class="flex items-center justify-between mb-1">
-                      <span class="text-[10px] text-[#8B7355]">{{ ev.createdBy }}</span>
+                    <div class="flex items-center justify-between mb-2">
+                      <div class="flex items-center gap-2">
+                        <span :class="['px-1.5 py-0.5 text-[10px] rounded font-medium', getEvidenceTypeColor(ev.evidenceType)]">
+                          {{ getEvidenceTypeLabel(ev.evidenceType) }}
+                        </span>
+                        <span class="text-[10px] text-[#8B7355]">{{ ev.createdBy }}</span>
+                      </div>
                       <span class="text-[10px] text-[#8B7355]">{{ formatDateTime(ev.createdAt) }}</span>
                     </div>
-                    <p class="text-xs text-[#3D2B1F] leading-relaxed">{{ ev.content }}</p>
+                    <p v-if="ev.content" class="text-xs text-[#3D2B1F] leading-relaxed mb-2">{{ ev.content }}</p>
+                    <div
+                      v-if="getReferencedItemsDisplay(ev).length > 0"
+                      class="space-y-1 pt-2 border-t border-[#D4C4A8]/30"
+                    >
+                      <div class="text-[10px] text-[#8B7355] font-medium mb-1">引用对象：</div>
+                      <div
+                        v-for="(item, idx) in getReferencedItemsDisplay(ev)"
+                        :key="idx"
+                        class="text-[10px] text-[#1D4E89] bg-[#1D4E89]/5 px-2 py-1 rounded"
+                      >
+                        {{ item }}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

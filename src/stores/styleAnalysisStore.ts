@@ -82,6 +82,34 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     versionDiffs.value = versionDiffs.value.filter(
       (d) => d.schemeAId !== schemeId && d.schemeBId !== schemeId
     )
+    associations.value = associations.value.filter(
+      (a) => !a.schemeIds.includes(schemeId)
+    )
+    manualRevisions.value = manualRevisions.value.filter(
+      (r) => {
+        if (r.targetType === 'style_profile') return r.targetId !== schemeId
+        if (r.targetType === 'version_diff') return !r.targetId.includes(schemeId)
+        if (r.targetType === 'association') return !r.targetId.includes(schemeId)
+        return true
+      }
+    )
+    evidences.value = evidences.value.filter(
+      (e) => {
+        if (e.targetType === 'style_profile') return e.targetId !== schemeId
+        if (e.targetType === 'version_diff') return !e.targetId.includes(schemeId)
+        if (e.targetType === 'association') return !e.targetId.includes(schemeId)
+        return true
+      }
+    )
+    if (selectedProfileId.value === schemeId) {
+      selectedProfileId.value = null
+    }
+    if (selectedDiffId.value?.includes(schemeId)) {
+      selectedDiffId.value = null
+    }
+    if (selectedAssociationId.value?.includes(schemeId)) {
+      selectedAssociationId.value = null
+    }
   }
 
   function getAllSchemes(): AnnotationScheme[] {
@@ -121,17 +149,27 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     return profile
   }
 
-  async function analyzeAllSchemes() {
+  async function analyzeAllSchemes(clearExistingData: boolean = true) {
     isAnalyzing.value = true
     try {
       const schemes = getAllSchemes()
       styleProfiles.value = []
+      if (clearExistingData) {
+        versionDiffs.value = []
+        associations.value = []
+        manualRevisions.value = []
+        evidences.value = []
+      }
       schemes.forEach((scheme) => {
         const profile = generateEngraverStyleProfile(scheme)
         styleProfiles.value.push(profile)
       })
       associations.value = findSameEngraverAssociations(styleProfiles.value)
-      versionDiffs.value = []
+      if (clearExistingData) {
+        selectedProfileId.value = null
+        selectedDiffId.value = null
+        selectedAssociationId.value = null
+      }
     } finally {
       isAnalyzing.value = false
     }
@@ -323,6 +361,39 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     downloadResearchReport(report)
   }
 
+  function getBladePathsForScheme(schemeId: string) {
+    const schemes = getAllSchemes()
+    const scheme = schemes.find((s) => s.id === schemeId)
+    return scheme?.bladePaths || []
+  }
+
+  function getMarkersForScheme(schemeId: string) {
+    const paths = getBladePathsForScheme(schemeId)
+    const markers: Array<{ marker: any; pathNumber: string; pathId: string }> = []
+    paths.forEach((path) => {
+      if (path.startMarker) {
+        markers.push({ marker: path.startMarker, pathNumber: path.pathNumber, pathId: path.id })
+      }
+      if (path.endMarker) {
+        markers.push({ marker: path.endMarker, pathNumber: path.pathNumber, pathId: path.id })
+      }
+      path.revisionMarkers?.forEach((m) => {
+        markers.push({ marker: m, pathNumber: path.pathNumber, pathId: path.id })
+      })
+    })
+    return markers
+  }
+
+  function getSchemeIdsForTarget(targetType: 'style_profile' | 'version_diff' | 'association', targetId: string): string[] {
+    if (targetType === 'style_profile') {
+      return [targetId]
+    } else if (targetType === 'version_diff') {
+      return targetId.split('-')
+    } else {
+      return targetId.split('-')
+    }
+  }
+
   function clearAll() {
     styleProfiles.value = []
     versionDiffs.value = []
@@ -369,6 +440,9 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     updateAssociationField,
     generateReport,
     exportReport,
+    getBladePathsForScheme,
+    getMarkersForScheme,
+    getSchemeIdsForTarget,
     clearAll
   }
 })
