@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, h } from 'vue'
 import { useProjectStore } from '../../stores/projectStore'
+import { useCollaborationStore } from '../../stores/collaborationStore'
 import { useBusinessRules } from '../../composables/useBusinessRules'
-import { useMessage, useDialog, NInput } from 'naive-ui'
+import { useMessage, useDialog, NInput, NBadge } from 'naive-ui'
 import CompareDialog from '../dialog/CompareDialog.vue'
+import DiffAnalysisDialog from '../dialog/DiffAnalysisDialog.vue'
+import CollaborationDialog from '../dialog/CollaborationDialog.vue'
 
 const projectStore = useProjectStore()
+const collaborationStore = useCollaborationStore()
 const businessRules = useBusinessRules()
 const message = useMessage()
 const dialog = useDialog()
@@ -15,6 +19,10 @@ const schemeInputRef = ref<HTMLInputElement | null>(null)
 const compareInputRef = ref<HTMLInputElement | null>(null)
 const researcherName = ref(projectStore.researcher)
 const showCompareDialog = ref(false)
+const showDiffDialog = ref(false)
+const showCollaborationDialog = ref(false)
+
+const openCommentsCount = computed(() => collaborationStore.openComments.length)
 
 const currentScheme = computed(() => projectStore.currentScheme)
 const isCompleted = computed(() => projectStore.isCompleted)
@@ -102,6 +110,14 @@ function showResearcherDialog() {
 function openCompareDialog() {
   showCompareDialog.value = true
 }
+
+function openDiffDialog() {
+  showDiffDialog.value = true
+}
+
+function openCollaborationDialog() {
+  showCollaborationDialog.value = true
+}
 </script>
 
 <template>
@@ -187,6 +203,35 @@ function openCompareDialog() {
         方案对比
       </button>
 
+      <button
+        @click="openDiffDialog"
+        :disabled="!hasImage"
+        class="px-4 py-2 bg-white border border-[#D4C4A8] text-[#3D2B1F] rounded-lg hover:bg-[#F5F0E6] transition-colors text-sm font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+        </svg>
+        差异分析
+      </button>
+
+      <button
+        @click="openCollaborationDialog"
+        :disabled="!hasImage"
+        class="px-4 py-2 bg-white border border-[#D4C4A8] text-[#3D2B1F] rounded-lg hover:bg-[#F5F0E6] transition-colors text-sm font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed relative"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+        协同复核
+        <n-badge
+          v-if="openCommentsCount > 0"
+          :value="openCommentsCount"
+          type="warning"
+          size="small"
+          class="absolute -top-1 -right-1"
+        />
+      </button>
+
       <div class="w-px h-6 bg-[#D4C4A8] mx-1" />
 
       <button
@@ -221,4 +266,6 @@ function openCompareDialog() {
   </header>
 
   <CompareDialog v-model:visible="showCompareDialog" />
+  <DiffAnalysisDialog v-model:visible="showDiffDialog" />
+  <CollaborationDialog v-model:visible="showCollaborationDialog" />
 </template>
