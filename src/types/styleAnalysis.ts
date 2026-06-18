@@ -5,6 +5,120 @@ export type BladeCutStyle = 'steady' | 'abrupt' | 'gradual'
 export type RevisionDensityLevel = 'low' | 'medium' | 'high'
 export type ConfidenceLevel = 'low' | 'medium' | 'high'
 
+export type GraphNodeType =
+  | 'scheme'
+  | 'style_profile'
+  | 'blade_path'
+  | 'marker'
+  | 'version_diff'
+  | 'association'
+  | 'evidence'
+  | 'revision'
+  | 'researcher'
+
+export type GraphEdgeType =
+  | 'belongs_to'
+  | 'has_feature'
+  | 'references'
+  | 'supports'
+  | 'contradicts'
+  | 'revises'
+  | 'similar_to'
+  | 'different_from'
+  | 'derived_from'
+  | 'authored_by'
+
+export interface GraphNode {
+  id: string
+  type: GraphNodeType
+  label: string
+  description?: string
+  metadata?: Record<string, any>
+  x?: number
+  y?: number
+  color?: string
+  size?: number
+}
+
+export interface GraphEdge {
+  id: string
+  source: string
+  target: string
+  type: GraphEdgeType
+  label?: string
+  weight?: number
+  metadata?: Record<string, any>
+}
+
+export interface KnowledgeGraph {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  generatedAt: number
+}
+
+export interface ConfidenceSnapshot {
+  id: string
+  targetType: 'style_profile' | 'version_diff' | 'association'
+  targetId: string
+  confidenceValue: number
+  confidenceLevel: ConfidenceLevel
+  recordedAt: number
+  recordedBy: string
+  reason?: string
+  evidenceIds: string[]
+  revisionIds: string[]
+}
+
+export interface ResearcherOpinion {
+  researcher: string
+  targetType: 'style_profile' | 'version_diff' | 'association'
+  targetId: string
+  judgment: string
+  confidence: ConfidenceLevel
+  confidenceValue: number
+  reasoning: string
+  evidenceIds: string[]
+  createdAt: number
+}
+
+export interface DissentGroup {
+  id: string
+  targetType: 'style_profile' | 'version_diff' | 'association'
+  targetId: string
+  targetLabel: string
+  opinions: ResearcherOpinion[]
+  consensusLevel: number
+  dominantJudgment?: string
+}
+
+export interface VersionEvolutionNode {
+  schemeId: string
+  schemeName: string
+  order: number
+  generation: number
+  predecessors: string[]
+  successors: string[]
+  relationType?: 'same_edition' | 'revised_edition' | 'derived_edition' | 'different_work'
+  similarityToPredecessor?: number
+}
+
+export interface VersionEvolutionChain {
+  id: string
+  rootSchemeId: string
+  rootSchemeName: string
+  nodes: VersionEvolutionNode[]
+  totalGenerations: number
+  description?: string
+}
+
+export interface GraphReport extends ResearchReport {
+  knowledgeGraph: KnowledgeGraph
+  confidenceHistory: ConfidenceSnapshot[]
+  dissents: DissentGroup[]
+  evolutionChains: VersionEvolutionChain[]
+  graphSvgData?: string
+}
+
 export interface PathMorphologyFeature {
   totalPaths: number
   smoothPaths: number

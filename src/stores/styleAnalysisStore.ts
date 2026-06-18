@@ -8,7 +8,13 @@ import type {
   ManualRevision,
   JudgmentEvidence,
   StyleAnalysisResult,
-  ResearchReport
+  ResearchReport,
+  KnowledgeGraph,
+  ConfidenceSnapshot,
+  DissentGroup,
+  VersionEvolutionChain,
+  GraphReport,
+  ConfidenceLevel
 } from '../types'
 import {
   generateEngraverStyleProfile,
@@ -19,6 +25,13 @@ import {
   generateResearchReport as createReport,
   downloadResearchReport
 } from '../utils/styleAnalysis'
+import {
+  buildKnowledgeGraph,
+  createConfidenceSnapshot,
+  collectResearcherOpinions,
+  buildVersionEvolutionChains,
+  computeConfidenceFromContext
+} from '../utils/knowledgeGraph'
 import { useProjectStore } from './projectStore'
 import { useLayerStore } from './layerStore'
 import { useBladePathStore } from './bladePathStore'
@@ -34,6 +47,10 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
   const selectedProfileId = ref<string | null>(null)
   const selectedDiffId = ref<string | null>(null)
   const selectedAssociationId = ref<string | null>(null)
+  const knowledgeGraph = ref<KnowledgeGraph | null>(null)
+  const confidenceHistory = ref<ConfidenceSnapshot[]>([])
+  const dissents = ref<DissentGroup[]>([])
+  const evolutionChains = ref<VersionEvolutionChain[]>([])
 
   const currentResult = computed<StyleAnalysisResult | null>(() => {
     if (styleProfiles.value.length === 0 && versionDiffs.value.length === 0 && associations.value.length === 0) {
@@ -170,6 +187,7 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
         selectedDiffId.value = null
         selectedAssociationId.value = null
       }
+      rebuildDerivedData()
     } finally {
       isAnalyzing.value = false
     }
@@ -394,6 +412,139 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     }
   }
 
+  function buildGraph() {
+    const schemes = getAllSchemes()
+    knowledgeGraph.value = buildKnowledgeGraph(
+      schemes,
+      styleProfiles.value,
+      versionDiffs.value,
+      associations.value,
+      manualRevisions.value,
+      evidences.value
+    )
+    return knowledgeGraph.value
+  }
+
+  function rebuildDerivedData() {
+    buildGraph()
+    dissents.value = collectResearcherOpinions(
+      styleProfiles.value,
+      versionDiffs.value,
+      associations.value,
+      manualRevisions.value,
+      evidences.value
+    )
+    evolutionChains.value = buildVersionEvolutionChains(
+      styleProfiles.value,
+      versionDiffs.value,
+      associations.value
+    )
+  }
+
+  function recordConfidenceSnapshot(
+    targetType: 'style_profile' | 'version_diff' | 'association',
+    targetId: string,
+    confidenceLevel: ConfidenceLevel,
+    recordedBy: string,
+    reason?: string,
+    customValue?: number
+  ) {
+    const targetEvidences = getEvidencesForTarget(targetType, targetId)
+    const targetRevisions = getRevisionsForTarget(targetType, targetId)
+    const snapshot = createConfidenceSnapshot(
+      targetType,
+      targetId,
+      confidenceLevel,
+      recordedBy,
+      reason,
+      targetEvidences.map((e) => e.id),
+      targetRevisions.map((r) => r.id),
+      customValue
+    )
+    confidenceHistory.value.push(snapshot)
+    return snapshot
+  }
+
+  function getConfidenceHistoryForTarget(
+    targetType: 'style_profile' | 'version_diff' | 'association',
+    targetId: string
+  ) {
+    return confidenceHistory.value
+      .filter((s) => s.targetType === targetType && s.targetId === targetId)
+      .sort((a, b) => a.recordedAt - b.recordedAt)
+  }
+
+  function getLatestConfidenceForTarget(
+    targetType: 'style_profile' | 'version_diff' | 'association',
+    targetId: string
+  ) {
+    const history = getConfidenceHistoryForTarget(targetType, targetId)
+    if (history.length > 0) return history[history.length - 1]
+    const evidencesForTarget = getEvidencesForTarget(targetType, targetId)
+    const revisionsForTarget = getRevisionsForTarget(targetType, targetId)
+    return computeConfidenceFromContext(evidencesForTarget, revisionsForTarget, 'medium')
+  }
+
+  function refreshDissents() {
+    dissents.value = collectResearcherOpinions(
+      styleProfiles.value,
+      versionDiffs.value,
+      associations.value,
+      manualRevisions.value,
+      evidences.value
+    )
+    return dissents.value
+  }
+
+  function refreshEvolutionChains() {
+    evolutionChains.value = buildVersionEvolutionChains(
+      styleProfiles.value,
+      versionDiffs.value,
+      associations.value
+    )
+    return evolutionChains.value
+  }
+
+  function generateGraphReport(
+    title: string,
+    generatedBy: string,
+    additionalNotes: string
+  ): GraphReport {
+    const baseReport = generateReport(title, generatedBy, additionalNotes)
+    rebuildDerivedData()
+    return {
+      ...baseReport,
+      knowledgeGraph: knowledgeGraph.value ?? { nodes: [], edges: [], generatedAt: Date.now() },
+      confidenceHistory: confidenceHistory.value,
+      dissents: dissents.value,
+      evolutionChains: evolutionChains.value
+    }
+  }
+
+  function exportGraphReport(
+    title: string,
+    generatedBy: string,
+    additionalNotes: string,
+    graphSvgData?: string
+  ) {
+    const report = generateGraphReport(title, generatedBy, additionalNotes)
+    if (graphSvgData) {
+      report.graphSvgData = graphSvgData
+    }
+    const json = JSON.stringify(report, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    const dateStr = new Date().toISOString().split('T')[0]
+    const safeTitle = title.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_')
+    link.download = `${safeTitle}_知识图谱研究报告_${dateStr}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   function clearAll() {
     styleProfiles.value = []
     versionDiffs.value = []
@@ -404,6 +555,10 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     selectedProfileId.value = null
     selectedDiffId.value = null
     selectedAssociationId.value = null
+    knowledgeGraph.value = null
+    confidenceHistory.value = []
+    dissents.value = []
+    evolutionChains.value = []
   }
 
   return {
@@ -417,6 +572,10 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     selectedProfileId,
     selectedDiffId,
     selectedAssociationId,
+    knowledgeGraph,
+    confidenceHistory,
+    dissents,
+    evolutionChains,
     currentResult,
     hasAnyAnalysis,
     getCurrentScheme,
@@ -443,6 +602,15 @@ export const useStyleAnalysisStore = defineStore('styleAnalysis', () => {
     getBladePathsForScheme,
     getMarkersForScheme,
     getSchemeIdsForTarget,
+    buildGraph,
+    rebuildDerivedData,
+    recordConfidenceSnapshot,
+    getConfidenceHistoryForTarget,
+    getLatestConfidenceForTarget,
+    refreshDissents,
+    refreshEvolutionChains,
+    generateGraphReport,
+    exportGraphReport,
     clearAll
   }
 })

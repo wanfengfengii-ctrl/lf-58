@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, watch, h } from 'vue'
+import { ref, computed, watch, h, nextTick } from 'vue'
 import { useStyleAnalysisStore } from '../../stores/styleAnalysisStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useMessage, useDialog } from 'naive-ui'
 import { readJsonFile, parseSchemeJson } from '../../utils/import'
+import KnowledgeGraph from '../graph/KnowledgeGraph.vue'
+import EvidenceTrail from '../graph/EvidenceTrail.vue'
+import ConfidenceTimeline from '../graph/ConfidenceTimeline.vue'
+import DissentPanel from '../graph/DissentPanel.vue'
+import VersionEvolution from '../graph/VersionEvolution.vue'
 import type {
   AnnotationScheme,
   EngraverStyleProfile,
@@ -12,7 +17,10 @@ import type {
   ConfidenceLevel,
   BladePath,
   Marker,
-  JudgmentEvidence
+  JudgmentEvidence,
+  GraphNode,
+  ConfidenceSnapshot,
+  DissentGroup
 } from '../../types'
 
 const props = defineProps<{
@@ -30,9 +38,12 @@ const dialog = useDialog()
 
 const schemeInputRef = ref<HTMLInputElement | null>(null)
 const activeTab = ref<'profiles' | 'diffs' | 'associations'>('profiles')
+const rightPanelTab = ref<'details' | 'graph' | 'evidence' | 'confidence' | 'dissent' | 'evolution'>('details')
 const compareSchemeAId = ref<string>('')
 const compareSchemeBId = ref<string>('')
 const isComparing = ref(false)
+const knowledgeGraphRef = ref<InstanceType<typeof KnowledgeGraph> | null>(null)
+const highlightedNodeId = ref<string | null>(null)
 
 
 const currentScheme = computed(() => projectStore.currentScheme)
@@ -73,6 +84,11 @@ watch(
     if (val && currentScheme.value) {
       if (allSchemes.value.length > 0) {
         compareSchemeAId.value = allSchemes.value[0].id
+      }
+      if (styleAnalysisStore.hasAnyAnalysis) {
+        nextTick(() => {
+          styleAnalysisStore.rebuildDerivedData()
+        })
       }
     }
   }
@@ -180,6 +196,8 @@ async function runCompare() {
     if (result) {
       activeTab.value = 'diffs'
       styleAnalysisStore.selectDiff(compareSchemeAId.value, compareSchemeBId.value)
+      styleAnalysisStore.rebuildDerivedData()
+      autoRecordConfidence('版次对比分析完成')
       message.success('版次对比分析完成')
     }
   } catch (err: any) {
@@ -286,6 +304,8 @@ function showEditProfileFieldDialog(field: 'overallStyleDescription' | 'styleTag
         projectStore.researcher,
         reason
       )
+      styleAnalysisStore.rebuildDerivedData()
+      autoRecordConfidence(reason)
       message.success('修订已保存')
     }
   })
@@ -346,6 +366,8 @@ function showEditDiffFieldDialog(field: 'summaryText' | 'suspectedVersionRelatio
         projectStore.researcher,
         reason
       )
+      styleAnalysisStore.rebuildDerivedData()
+      autoRecordConfidence(reason)
       message.success('修订已保存')
     }
   })
@@ -401,6 +423,8 @@ function showEditAssociationFieldDialog(field: 'analysisNotes' | 'sharedFeatures
         projectStore.researcher,
         reason
       )
+      styleAnalysisStore.rebuildDerivedData()
+      autoRecordConfidence(reason)
       message.success('修订已保存')
     }
   })
@@ -595,6 +619,8 @@ function showAddEvidenceDialog(
         referencedIds,
         projectStore.researcher
       )
+      styleAnalysisStore.rebuildDerivedData()
+      autoRecordConfidence(`新增判读依据：${evidenceType.value === 'text_note' ? '文字说明' : evidenceType.value === 'path_reference' ? '刀路引用' : '标记引用'}`)
       message.success('判读依据已添加')
     }
   })
@@ -670,6 +696,147 @@ const currentRevisions = computed(() => {
   return styleAnalysisStore.getRevisionsForTarget(target.type, target.id)
 })
 
+const currentTargetLabel = computed(() => {
+  if (selectedProfile.value) return `风格画像·${selectedProfile.value.schemeName}`
+  if (selectedDiff.value) return `版次对比·${selectedDiff.value.schemeAName}↔${selectedDiff.value.schemeBName}`
+  if (selectedAssociation.value) return `同工关联·${selectedAssociation.value.schemeNames.join('↔')}`
+  return ''
+})
+
+const currentConfidenceHistory = computed((): ConfidenceSnapshot[] => {
+  const target = getCurrentTargetInfo()
+  if (!target) return []
+  return styleAnalysisStore.getConfidenceHistoryForTarget(target.type, target.id)
+})
+
+const graphData = computed(() => {
+  if (styleAnalysisStore.knowledgeGraph) return styleAnalysisStore.knowledgeGraph
+  return { nodes: [], edges: [], generatedAt: 0 }
+})
+
+function handleGraphNodeClick(node: GraphNode) {
+  highlightedNodeId.value = node.id
+  if (node.type === 'scheme') {
+    const schemeId = node.id.replace('scheme-', '')
+    styleAnalysisStore.selectProfile(schemeId)
+    rightPanelTab.value = 'details'
+  } else if (node.type === 'style_profile') {
+    const schemeId = node.id.replace('profile-', '')
+    styleAnalysisStore.selectProfile(schemeId)
+    rightPanelTab.value = 'details'
+  } else if (node.type === 'version_diff') {
+    const rest = node.id.replace('diff-', '')
+    const [aId, bId] = rest.split('-')
+    styleAnalysisStore.selectDiff(aId, bId)
+    rightPanelTab.value = 'details'
+  } else if (node.type === 'association') {
+    const rest = node.id.replace('assoc-', '')
+    const ids = rest.split('-')
+    const assoc = styleAnalysisStore.associations.find((a) => a.schemeIds.join('-') === ids.join('-'))
+    if (assoc) {
+      const idx = styleAnalysisStore.associations.indexOf(assoc)
+      styleAnalysisStore.selectAssociation(idx)
+      rightPanelTab.value = 'details'
+    }
+  }
+}
+
+function handleNavigateEvidence(evidence: JudgmentEvidence) {
+  highlightedNodeId.value = `evidence-${evidence.id}`
+  rightPanelTab.value = 'graph'
+}
+
+function handleSelectDissent(dissent: DissentGroup) {
+  if (dissent.targetType === 'style_profile') {
+    styleAnalysisStore.selectProfile(dissent.targetId)
+  } else if (dissent.targetType === 'version_diff') {
+    const [aId, bId] = dissent.targetId.split('-')
+    styleAnalysisStore.selectDiff(aId, bId)
+  } else {
+    const ids = dissent.targetId.split('-')
+    const assoc = styleAnalysisStore.associations.find((a) => a.schemeIds.join('-') === ids.join('-'))
+    if (assoc) {
+      const idx = styleAnalysisStore.associations.indexOf(assoc)
+      styleAnalysisStore.selectAssociation(idx)
+    }
+  }
+  rightPanelTab.value = 'details'
+}
+
+function handleSelectEvolutionNode(schemeId: string) {
+  styleAnalysisStore.selectProfile(schemeId)
+  rightPanelTab.value = 'details'
+}
+
+function autoRecordConfidence(reason: string) {
+  const target = getCurrentTargetInfo()
+  if (!target) return
+  let level: ConfidenceLevel = 'medium'
+  if (target.type === 'association') {
+    level = selectedAssociation.value?.confidence || 'medium'
+  } else if (target.type === 'version_diff') {
+    const sim = selectedDiff.value?.overallSimilarity ?? 0
+    level = sim >= 0.85 ? 'high' : sim >= 0.7 ? 'medium' : 'low'
+  }
+  styleAnalysisStore.recordConfidenceSnapshot(
+    target.type,
+    target.id,
+    level,
+    projectStore.researcher,
+    reason
+  )
+}
+
+function showGraphExportReportDialog() {
+  let title = '古籍木刻研究知识图谱报告'
+  let notes = ''
+
+  const d = dialog.create({
+    title: '导出知识图谱研究报告',
+    content: () =>
+      h('div', { style: 'display: flex; flex-direction: column; gap: 12px;' }, [
+        h('div', { style: 'display: flex; flex-direction: column; gap: 4px;' }, [
+          h('div', { style: 'font-size: 13px; color: #5c4a3a; font-weight: 500;' }, '报告标题'),
+          h('input', {
+            value: title,
+            placeholder: '请输入报告标题',
+            onInput: (e: Event) => {
+              title = (e.target as HTMLInputElement).value
+            },
+            style: 'width: 100%; padding: 8px 12px; border: 1px solid #d4c4a8; border-radius: 6px; font-size: 14px; box-sizing: border-box; outline: none;'
+          })
+        ]),
+        h('div', { style: 'display: flex; flex-direction: column; gap: 4px;' }, [
+          h('div', { style: 'font-size: 13px; color: #5c4a3a; font-weight: 500;' }, '附加说明'),
+          h('textarea', {
+            value: notes,
+            placeholder: '附加说明（可选）',
+            onInput: (e: Event) => {
+              notes = (e.target as HTMLTextAreaElement).value
+            },
+            style: 'width: 100%; padding: 8px 12px; border: 1px solid #d4c4a8; border-radius: 6px; font-size: 14px; min-height: 80px; resize: vertical; box-sizing: border-box; outline: none;',
+            rows: 3
+          }, [notes])
+        ]),
+        h('div', { style: 'font-size: 12px; color: #8B7355;' }, [
+          `报告将包含：${graphData.value.nodes.length} 个图谱节点、${graphData.value.edges.length} 条关系边、${styleAnalysisStore.confidenceHistory.length} 条置信度记录、${styleAnalysisStore.dissents.length} 组分歧对照、${styleAnalysisStore.evolutionChains.length} 条演化链`
+        ])
+      ]),
+    positiveText: '导出图谱报告',
+    negativeText: '取消',
+    onPositiveClick: () => {
+      const svgData = knowledgeGraphRef.value?.getSvgData()
+      styleAnalysisStore.exportGraphReport(
+        title,
+        projectStore.researcher,
+        notes,
+        svgData
+      )
+      message.success('知识图谱研究报告已导出')
+    }
+  })
+}
+
 function formatDateTime(timestamp: number): string {
   return new Date(timestamp).toLocaleString('zh-CN')
 }
@@ -742,12 +909,12 @@ function close() {
       <div class="px-6 py-4 border-b border-[#D4C4A8] flex items-center justify-between bg-[#F5F0E6]/50">
         <div>
           <h2 class="text-lg font-bold text-[#3D2B1F] flex items-center gap-2">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            <svg class="w-5 h-5 text-[#6B4E71]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
             </svg>
-            刻工风格识别与版次推断
+            古籍木刻研究知识图谱与证据链追踪系统
           </h2>
-          <p class="text-xs text-[#8B7355] mt-1">基于刀路特征自动分析刻工风格，推断版次关系，识别同工异版关联</p>
+          <p class="text-xs text-[#8B7355] mt-1">刀路特征·风格画像·版次关系·同工异版·人工修订·判读依据 — 可视化关系网络与证据溯源</p>
         </div>
         <div class="flex items-center gap-2">
           <button
@@ -758,7 +925,17 @@ function close() {
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
-            导出研究报告
+            标准报告
+          </button>
+          <button
+            v-if="styleProfiles.length > 0"
+            @click="showGraphExportReportDialog"
+            class="px-4 py-2 bg-[#6B4E71] text-white rounded-lg hover:bg-[#5a4160] transition-colors text-sm font-medium flex items-center gap-2 shadow-sm"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            图谱式报告
           </button>
           <button
             @click="close"
@@ -1597,124 +1774,254 @@ function close() {
               </template>
             </div>
 
-            <div class="w-80 border-l border-[#D4C4A8] bg-white flex flex-col overflow-hidden">
-              <div class="px-4 py-3 border-b border-[#D4C4A8] bg-[#F5F0E6]/30">
-                <h4 class="text-xs font-semibold text-[#3D2B1F] flex items-center gap-2">
-                  <svg class="w-4 h-4 text-[#1D4E89]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            <div class="w-96 border-l border-[#D4C4A8] bg-white flex flex-col overflow-hidden">
+              <div class="flex border-b border-[#D4C4A8] bg-[#F5F0E6]/50">
+                <button
+                  v-for="tab in [
+                    { key: 'details', label: '详情证据', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
+                    { key: 'graph', label: '知识图谱', icon: 'M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1' },
+                    { key: 'evidence', label: '证据溯源', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4' },
+                    { key: 'confidence', label: '置信追踪', icon: 'M13 7h8m0 0v8m0-8l-8 8-4-4-6 6' },
+                    { key: 'dissent', label: '分歧对照', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z' },
+                    { key: 'evolution', label: '版本演化', icon: 'M13 10V3L4 14h7v7l9-11h-7z' }
+                  ] as const"
+                  :key="tab.key"
+                  @click="rightPanelTab = tab.key"
+                  :class="[
+                    'flex-1 py-2.5 text-[11px] font-medium transition-colors relative flex flex-col items-center gap-0.5',
+                    rightPanelTab === tab.key ? 'text-[#6B4E71] bg-white' : 'text-[#8B7355] hover:text-[#3D2B1F]'
+                  ]"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="tab.icon" />
                   </svg>
-                  判读依据
-                  <span class="ml-auto px-1.5 py-0.5 text-[10px] rounded-full bg-[#1D4E89]/10 text-[#1D4E89]">
-                    {{ currentEvidences.length }}
-                  </span>
-                </h4>
-              </div>
-              <div class="flex-1 overflow-y-auto p-3">
-                <div v-if="!selectedProfile && !selectedDiff && !selectedAssociation" class="text-center py-6 text-[#8B7355] text-xs">
-                  先选择左侧分析项
-                </div>
-                <div v-else-if="currentEvidences.length === 0" class="text-center py-6 text-[#8B7355] text-xs">
-                  暂无判读依据，点击「添加依据」按钮添加
-                </div>
-                <div v-else class="space-y-2">
+                  {{ tab.label }}
                   <div
-                    v-for="ev in currentEvidences"
-                    :key="ev.id"
-                    class="p-3 bg-[#F5F0E6]/50 rounded-lg border border-[#D4C4A8]/50"
-                  >
-                    <div class="flex items-center justify-between mb-2">
-                      <div class="flex items-center gap-2">
-                        <span :class="['px-1.5 py-0.5 text-[10px] rounded font-medium', getEvidenceTypeColor(ev.evidenceType)]">
-                          {{ getEvidenceTypeLabel(ev.evidenceType) }}
-                        </span>
-                        <span class="text-[10px] text-[#8B7355]">{{ ev.createdBy }}</span>
-                      </div>
-                      <span class="text-[10px] text-[#8B7355]">{{ formatDateTime(ev.createdAt) }}</span>
-                    </div>
-                    <p v-if="ev.content" class="text-xs text-[#3D2B1F] leading-relaxed mb-2">{{ ev.content }}</p>
-                    <div
-                      v-if="getReferencedItemsDisplay(ev).length > 0"
-                      class="space-y-1 pt-2 border-t border-[#D4C4A8]/30"
-                    >
-                      <div class="text-[10px] text-[#8B7355] font-medium mb-1">引用对象：</div>
-                      <div
-                        v-for="(item, idx) in getReferencedItemsDisplay(ev)"
-                        :key="idx"
-                        class="text-[10px] text-[#1D4E89] bg-[#1D4E89]/5 px-2 py-1 rounded"
-                      >
-                        {{ item }}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                    v-if="rightPanelTab === tab.key"
+                    class="absolute bottom-0 left-2 right-2 h-0.5 bg-[#6B4E71] rounded-full"
+                  />
+                </button>
               </div>
 
-              <div class="border-t border-[#D4C4A8]">
-                <div class="px-4 py-3 bg-[#F5F0E6]/30">
+              <template v-if="rightPanelTab === 'details'">
+                <div class="px-4 py-3 border-b border-[#D4C4A8] bg-[#F5F0E6]/30">
                   <h4 class="text-xs font-semibold text-[#3D2B1F] flex items-center gap-2">
-                    <svg class="w-4 h-4 text-[#6B4E71]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    <svg class="w-4 h-4 text-[#1D4E89]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    修订记录
-                    <span class="ml-auto px-1.5 py-0.5 text-[10px] rounded-full bg-[#6B4E71]/10 text-[#6B4E71]">
-                      {{ currentRevisions.length }}
+                    判读依据
+                    <span class="ml-auto px-1.5 py-0.5 text-[10px] rounded-full bg-[#1D4E89]/10 text-[#1D4E89]">
+                      {{ currentEvidences.length }}
                     </span>
                   </h4>
                 </div>
-                <div class="overflow-y-auto max-h-60 p-3">
-                  <div v-if="!selectedProfile && !selectedDiff && !selectedAssociation" class="text-center py-4 text-[#8B7355] text-xs">
+                <div class="flex-1 overflow-y-auto p-3">
+                  <div v-if="!selectedProfile && !selectedDiff && !selectedAssociation" class="text-center py-6 text-[#8B7355] text-xs">
                     先选择左侧分析项
                   </div>
-                  <div v-else-if="currentRevisions.length === 0" class="text-center py-4 text-[#8B7355] text-xs">
-                    暂无修订记录
+                  <div v-else-if="currentEvidences.length === 0" class="text-center py-6 text-[#8B7355] text-xs">
+                    暂无判读依据，点击「添加依据」按钮添加
                   </div>
                   <div v-else class="space-y-2">
                     <div
-                      v-for="rev in currentRevisions"
-                      :key="rev.id"
-                      class="p-2.5 bg-purple-50/50 rounded-lg border border-purple-100"
+                      v-for="ev in currentEvidences"
+                      :key="ev.id"
+                      class="p-3 bg-[#F5F0E6]/50 rounded-lg border border-[#D4C4A8]/50"
                     >
-                      <div class="flex items-center justify-between mb-1">
-                        <span class="text-[10px] font-medium text-[#6B4E71]">{{ rev.fieldName }}</span>
-                        <span class="text-[10px] text-[#8B7355]">{{ formatDateTime(rev.revisedAt) }}</span>
+                      <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                          <span :class="['px-1.5 py-0.5 text-[10px] rounded font-medium', getEvidenceTypeColor(ev.evidenceType)]">
+                            {{ getEvidenceTypeLabel(ev.evidenceType) }}
+                          </span>
+                          <span class="text-[10px] text-[#8B7355]">{{ ev.createdBy }}</span>
+                        </div>
+                        <span class="text-[10px] text-[#8B7355]">{{ formatDateTime(ev.createdAt) }}</span>
                       </div>
-                      <div class="text-[10px] space-y-0.5">
-                        <div class="flex gap-1">
-                          <span class="text-[#8B7355] flex-shrink-0">原值：</span>
-                          <span class="text-red-600 line-clamp-2">{{ rev.originalValue || '(空)' }}</span>
-                        </div>
-                        <div class="flex gap-1">
-                          <span class="text-[#8B7355] flex-shrink-0">新值：</span>
-                          <span class="text-green-600 line-clamp-2">{{ rev.revisedValue || '(空)' }}</span>
-                        </div>
-                        <div class="pt-1">
-                          <span class="text-[#8B7355]">修订人：{{ rev.revisedBy }}</span>
+                      <p v-if="ev.content" class="text-xs text-[#3D2B1F] leading-relaxed mb-2">{{ ev.content }}</p>
+                      <div
+                        v-if="getReferencedItemsDisplay(ev).length > 0"
+                        class="space-y-1 pt-2 border-t border-[#D4C4A8]/30"
+                      >
+                        <div class="text-[10px] text-[#8B7355] font-medium mb-1">引用对象：</div>
+                        <div
+                          v-for="(item, idx) in getReferencedItemsDisplay(ev)"
+                          :key="idx"
+                          class="text-[10px] text-[#1D4E89] bg-[#1D4E89]/5 px-2 py-1 rounded"
+                        >
+                          {{ item }}
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
+
+                <div class="border-t border-[#D4C4A8]">
+                  <div class="px-4 py-3 bg-[#F5F0E6]/30">
+                    <h4 class="text-xs font-semibold text-[#3D2B1F] flex items-center gap-2">
+                      <svg class="w-4 h-4 text-[#6B4E71]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                      修订记录
+                      <span class="ml-auto px-1.5 py-0.5 text-[10px] rounded-full bg-[#6B4E71]/10 text-[#6B4E71]">
+                        {{ currentRevisions.length }}
+                      </span>
+                    </h4>
+                  </div>
+                  <div class="overflow-y-auto max-h-60 p-3">
+                    <div v-if="!selectedProfile && !selectedDiff && !selectedAssociation" class="text-center py-4 text-[#8B7355] text-xs">
+                      先选择左侧分析项
+                    </div>
+                    <div v-else-if="currentRevisions.length === 0" class="text-center py-4 text-[#8B7355] text-xs">
+                      暂无修订记录
+                    </div>
+                    <div v-else class="space-y-2">
+                      <div
+                        v-for="rev in currentRevisions"
+                        :key="rev.id"
+                        class="p-2.5 bg-purple-50/50 rounded-lg border border-purple-100"
+                      >
+                        <div class="flex items-center justify-between mb-1">
+                          <span class="text-[10px] font-medium text-[#6B4E71]">{{ rev.fieldName }}</span>
+                          <span class="text-[10px] text-[#8B7355]">{{ formatDateTime(rev.revisedAt) }}</span>
+                        </div>
+                        <div class="text-[10px] space-y-0.5">
+                          <div class="flex gap-1">
+                            <span class="text-[#8B7355] flex-shrink-0">原值：</span>
+                            <span class="text-red-600 line-clamp-2">{{ rev.originalValue || '(空)' }}</span>
+                          </div>
+                          <div class="flex gap-1">
+                            <span class="text-[#8B7355] flex-shrink-0">新值：</span>
+                            <span class="text-green-600 line-clamp-2">{{ rev.revisedValue || '(空)' }}</span>
+                          </div>
+                          <div class="pt-1">
+                            <span class="text-[#8B7355]">修订人：{{ rev.revisedBy }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else-if="rightPanelTab === 'graph'">
+                <div class="flex-1 bg-[#FAF7F2] overflow-hidden relative">
+                  <div v-if="graphData.nodes.length === 0" class="absolute inset-0 flex items-center justify-center">
+                    <div class="text-center text-[#8B7355]">
+                      <svg class="w-16 h-16 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                      <p class="text-sm">暂无图谱数据</p>
+                      <p class="text-xs mt-1">运行全量分析后自动构建知识图谱</p>
+                    </div>
+                  </div>
+                  <KnowledgeGraph
+                    v-else
+                    ref="knowledgeGraphRef"
+                    :graph="graphData"
+                    :highlight-node-id="highlightedNodeId || undefined"
+                    :on-node-click="handleGraphNodeClick"
+                  />
+                </div>
+              </template>
+
+              <template v-else-if="rightPanelTab === 'evidence'">
+                <div class="flex-1 overflow-y-auto bg-white">
+                  <div v-if="!selectedProfile && !selectedDiff && !selectedAssociation" class="h-full flex items-center justify-center">
+                    <div class="text-center py-12 text-[#8B7355] text-xs">
+                      <svg class="w-12 h-12 mx-auto mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      先选择左侧分析项查看证据溯源链
+                    </div>
+                  </div>
+                  <EvidenceTrail
+                    v-else
+                    :target-type="getCurrentTargetInfo()!.type"
+                    :target-id="getCurrentTargetInfo()!.id"
+                    :target-label="currentTargetLabel"
+                    :evidences="currentEvidences"
+                    :revisions="currentRevisions"
+                    :on-navigate-evidence="handleNavigateEvidence"
+                  />
+                </div>
+              </template>
+
+              <template v-else-if="rightPanelTab === 'confidence'">
+                <div class="flex-1 overflow-y-auto bg-white p-4">
+                  <div v-if="!selectedProfile && !selectedDiff && !selectedAssociation" class="h-full flex items-center justify-center">
+                    <div class="text-center py-12 text-[#8B7355] text-xs">
+                      <svg class="w-12 h-12 mx-auto mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                      </svg>
+                      先选择左侧分析项查看置信度变化
+                    </div>
+                  </div>
+                  <ConfidenceTimeline
+                    v-else
+                    :snapshots="currentConfidenceHistory"
+                    :target-label="currentTargetLabel"
+                  />
+                </div>
+              </template>
+
+              <template v-else-if="rightPanelTab === 'dissent'">
+                <div class="flex-1 overflow-y-auto bg-white">
+                  <DissentPanel
+                    :dissents="styleAnalysisStore.dissents"
+                    :on-select-dissent="handleSelectDissent"
+                  />
+                </div>
+              </template>
+
+              <template v-else-if="rightPanelTab === 'evolution'">
+                <div class="flex-1 overflow-y-auto bg-white p-4">
+                  <VersionEvolution
+                    :chains="styleAnalysisStore.evolutionChains"
+                    :on-select-node="handleSelectEvolutionNode"
+                  />
+                </div>
+              </template>
             </div>
           </div>
         </div>
       </div>
 
       <div class="px-6 py-3 border-t border-[#D4C4A8] flex items-center justify-between bg-[#F5F0E6]/50">
-        <div class="text-sm text-[#8B7355]">
+        <div class="text-sm text-[#8B7355] flex flex-wrap items-center gap-x-4 gap-y-1">
           <span v-if="styleProfiles.length > 0">
-            已分析 {{ styleProfiles.length }} 个方案 · {{ versionDiffs.length }} 组版次对比 · {{ associations.length }} 组同工异版关联
+            <span class="inline-flex items-center gap-1">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              {{ styleProfiles.length }} 风格画像
+            </span>
+            <span class="mx-1 text-[#D4C4A8]">·</span>
+            <span>{{ versionDiffs.length }} 版次对比</span>
+            <span class="mx-1 text-[#D4C4A8]">·</span>
+            <span>{{ associations.length }} 同工关联</span>
+            <span v-if="graphData.nodes.length > 0" class="mx-1 text-[#D4C4A8]">·</span>
+            <span v-if="graphData.nodes.length > 0" class="inline-flex items-center gap-1">
+              <svg class="w-3.5 h-3.5 text-[#6B4E71]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              </svg>
+              <span class="text-[#6B4E71]">{{ graphData.nodes.length }} 节点 / {{ graphData.edges.length }} 关系</span>
+            </span>
+            <span v-if="styleAnalysisStore.confidenceHistory.length > 0" class="mx-1 text-[#D4C4A8]">·</span>
+            <span v-if="styleAnalysisStore.confidenceHistory.length > 0">
+              <span class="text-[#E8A838]">{{ styleAnalysisStore.confidenceHistory.length }} 置信记录</span>
+            </span>
+            <span v-if="styleAnalysisStore.dissents.length > 0" class="mx-1 text-[#D4C4A8]">·</span>
+            <span v-if="styleAnalysisStore.dissents.length > 0">
+              <span class="text-[#C41E3A]">{{ styleAnalysisStore.dissents.length }} 研究观点</span>
+            </span>
+            <span v-if="styleAnalysisStore.evolutionChains.length > 0" class="mx-1 text-[#D4C4A8]">·</span>
+            <span v-if="styleAnalysisStore.evolutionChains.length > 0">
+              <span class="text-[#2E5D3B]">{{ styleAnalysisStore.evolutionChains.length }} 演化链</span>
+            </span>
           </span>
           <span v-else>等待分析...</span>
         </div>
         <div class="flex items-center gap-2">
-          <button
-            v-if="styleProfiles.length > 0"
-            @click="showExportReportDialog"
-            class="px-4 py-2 border border-[#D4C4A8] text-[#3D2B1F] rounded-lg hover:bg-white transition-colors text-sm"
-          >
-            导出报告
-          </button>
           <button
             @click="close"
             class="px-6 py-2 bg-[#3D2B1F] text-white rounded-lg hover:bg-[#2d2017] transition-colors text-sm font-medium"
